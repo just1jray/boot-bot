@@ -1,11 +1,12 @@
 # boot-bot-hunter
 
-Stock checker for [Hunter Boots Moon Lug Sole Snow Booties](https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01) (Size 9). Polls the Shopify product API every 60 seconds and sends an SMS via Twilio when back in stock.
+Stock checker for [Hunter Boots Moon Lug Sole Snow Booties](https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01) (Size 9). Polls the Shopify product API every 60 seconds and sends a WhatsApp message via Twilio when back in stock.
 
 ## Prerequisites
 
 - Python 3.9+
 - A [Twilio account](https://www.twilio.com/try-twilio) (free trial works)
+- WhatsApp on your phone
 
 ## Install
 
@@ -17,12 +18,15 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Twilio Setup
+## Twilio WhatsApp Setup
 
-1. Sign up at [twilio.com](https://www.twilio.com/try-twilio) — the free trial includes $15+ in credit
+1. Sign up at [twilio.com](https://www.twilio.com/try-twilio)
 2. From the [Twilio Console](https://console.twilio.com/), copy your **Account SID** and **Auth Token**
-3. A phone number is assigned automatically — find it under **Phone Numbers > Manage > Active numbers**
-4. On a trial account, verify your personal phone number under **Phone Numbers > Manage > Verified Caller IDs**
+3. Go to **Messaging > Try it out > Send a WhatsApp message** in the console
+4. Follow the instructions to join the sandbox: send the provided code (e.g. "join <two-words>") from your WhatsApp to the Twilio sandbox number **+1 415 523 8886**
+5. Once you receive a confirmation reply, your WhatsApp is connected
+
+**Note:** The sandbox session expires after 72 hours of inactivity. If the checker stops delivering messages, re-send the join code from step 4 to reconnect.
 
 ## Configure
 
@@ -35,9 +39,10 @@ Edit `.env` with your values:
 ```
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TWILIO_FROM_NUMBER=+12125551234
-SMS_TO_NUMBER=+12125556789
+WHATSAPP_TO=+12125556789
 ```
+
+`WHATSAPP_TO` is your personal phone number (the one linked to your WhatsApp).
 
 ## Run
 
@@ -47,14 +52,14 @@ export $(cat .env | xargs)
 python stock_checker.py
 ```
 
-You'll receive a confirmation SMS on startup. The checker logs each poll to stdout:
+You'll receive a confirmation WhatsApp message on startup. The checker logs each poll to stdout:
 
 ```
   [14:32:01] Check #1: Size 9 is sold out
   [14:33:01] Check #2: Size 9 is sold out
 ```
 
-When size 9 comes back in stock, you'll get an SMS with the buy link.
+When size 9 comes back in stock, you'll get a WhatsApp message with the buy link.
 
 ## Run on a Headless Server
 
@@ -129,9 +134,7 @@ Create `~/Library/LaunchAgents/com.bootbothunter.plist`:
         <string>ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</string>
         <key>TWILIO_AUTH_TOKEN</key>
         <string>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</string>
-        <key>TWILIO_FROM_NUMBER</key>
-        <string>+12125551234</string>
-        <key>SMS_TO_NUMBER</key>
+        <key>WHATSAPP_TO</key>
         <string>+12125556789</string>
     </dict>
     <key>RunAtLoad</key>

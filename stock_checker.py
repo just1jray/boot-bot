@@ -2,7 +2,7 @@
 """
 Hunter Boots Stock Checker
 Monitors size 9 availability for the Moon Lug Sole Snow Booties
-and sends an SMS via Twilio when back in stock.
+and sends a WhatsApp message via Twilio when back in stock.
 """
 
 import json
@@ -24,8 +24,7 @@ CHECK_INTERVAL_SECONDS = 60
 # Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
-TWILIO_FROM_NUMBER = os.environ["TWILIO_FROM_NUMBER"]  # Your Twilio phone number
-SMS_TO_NUMBER = os.environ["SMS_TO_NUMBER"]  # Your personal phone number
+WHATSAPP_TO = os.environ["WHATSAPP_TO"]  # Your number, e.g. +12125556789
 
 
 def check_stock() -> dict:
@@ -48,28 +47,28 @@ def check_stock() -> dict:
     raise ValueError(f"Variant {TARGET_VARIANT_ID} (size {TARGET_SIZE}) not found")
 
 
-def send_sms(message: str):
-    """Send an SMS via Twilio."""
+def send_whatsapp(message: str):
+    """Send a WhatsApp message via Twilio sandbox."""
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     client.messages.create(
         body=message,
-        from_=TWILIO_FROM_NUMBER,
-        to=SMS_TO_NUMBER,
+        from_="whatsapp:+14155238886",  # Twilio sandbox number
+        to=f"whatsapp:{WHATSAPP_TO}",
     )
 
 
 def main():
     # Validate Twilio credentials on startup
-    send_sms(f"Hunter Boots stock checker started. Monitoring size {TARGET_SIZE} every {CHECK_INTERVAL_SECONDS}s.")
+    send_whatsapp(f"Hunter Boots stock checker started. Monitoring size {TARGET_SIZE} every {CHECK_INTERVAL_SECONDS}s.")
 
     print("=" * 60)
     print("  Hunter Boots Stock Checker")
     print(f"  Product: Moon Lug Sole Snow Booties (Size {TARGET_SIZE})")
     print(f"  Checking every {CHECK_INTERVAL_SECONDS} seconds")
-    print(f"  SMS notifications to: {SMS_TO_NUMBER}")
+    print(f"  WhatsApp notifications to: {WHATSAPP_TO}")
     print("=" * 60)
     print()
-    print("  Startup SMS sent successfully.")
+    print("  Startup WhatsApp message sent successfully.")
     print()
 
     check_count = 0
@@ -97,8 +96,8 @@ def main():
                 print("  " + "!" * 50)
                 print()
 
-                send_sms(msg)
-                print("  SMS sent!")
+                send_whatsapp(msg)
+                print("  WhatsApp message sent!")
                 print("  Continuing to monitor in case it sells out and restocks...")
                 print()
 
