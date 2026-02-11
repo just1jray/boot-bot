@@ -20,6 +20,7 @@ PRODUCT_JS_URL = f"{PRODUCT_URL}.js"
 TARGET_VARIANT_ID = 51139451552036  # Size 9 / Black
 TARGET_SIZE = "9"
 CHECK_INTERVAL_SECONDS = 60
+HEARTBEAT_INTERVAL_HOURS = 48
 
 # Twilio credentials
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
@@ -72,10 +73,18 @@ def main():
     print()
 
     check_count = 0
+    last_heartbeat = time.monotonic()
 
     while True:
         check_count += 1
         now = datetime.now().strftime("%H:%M:%S")
+
+        # Send heartbeat every 48 hours to keep Twilio sandbox alive
+        elapsed_hours = (time.monotonic() - last_heartbeat) / 3600
+        if elapsed_hours >= HEARTBEAT_INTERVAL_HOURS:
+            send_whatsapp(f"Still watching size {TARGET_SIZE} — {check_count} checks so far, still sold out.")
+            last_heartbeat = time.monotonic()
+            print(f"  [{now}] Heartbeat sent")
 
         try:
             info = check_stock()
