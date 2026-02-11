@@ -7,6 +7,7 @@ and sends a WhatsApp message via Twilio when back in stock.
 
 import json
 import os
+import platform
 import sys
 import time
 from datetime import datetime
@@ -59,13 +60,33 @@ def send_whatsapp(message: str):
 
 
 def main():
-    # Validate Twilio credentials on startup
-    send_whatsapp(f"Hunter Boots stock checker started. Monitoring size {TARGET_SIZE} every {CHECK_INTERVAL_SECONDS}s.")
+    # Run initial stock check and send startup message
+    host = platform.node()
+    started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        info = check_stock()
+        initial_status = "IN STOCK" if info["available"] else "sold out"
+    except Exception as e:
+        initial_status = f"unknown ({e})"
+
+    startup_msg = (
+        f"Stock checker started on {host} at {started_at}\n"
+        f"Product: Moon Lug Sole Snow Booties\n"
+        f"Size: {TARGET_SIZE}\n"
+        f"Current status: {initial_status}\n"
+        f"Check interval: {CHECK_INTERVAL_SECONDS}s\n"
+        f"Heartbeat: every {HEARTBEAT_INTERVAL_HOURS}h"
+    )
+    send_whatsapp(startup_msg)
 
     print("=" * 60)
     print("  Hunter Boots Stock Checker")
+    print(f"  Host: {host}")
     print(f"  Product: Moon Lug Sole Snow Booties (Size {TARGET_SIZE})")
+    print(f"  Initial status: {initial_status}")
     print(f"  Checking every {CHECK_INTERVAL_SECONDS} seconds")
+    print(f"  Heartbeat every {HEARTBEAT_INTERVAL_HOURS} hours")
     print(f"  WhatsApp notifications to: {WHATSAPP_TO}")
     print("=" * 60)
     print()
