@@ -2,9 +2,15 @@
 """
 Hunter Boots Stock Checker
 Monitors size 9 availability for the Moon Lug Sole Snow Booties
-and sends WhatsApp + email notifications when back in stock.
+and sends notifications when back in stock.
+
+Enable channels with env vars or CLI flags:
+  --ntfy       Enable ntfy.sh push notifications
+  --email      Enable email via SMTP
+  --whatsapp   Enable WhatsApp via Twilio sandbox
 """
 
+import argparse
 import json
 import os
 import platform
@@ -13,7 +19,6 @@ import sys
 import time
 from datetime import datetime
 from email.message import EmailMessage
-from pathlib import Path
 
 import requests
 from twilio.rest import Client as TwilioClient
@@ -25,21 +30,6 @@ TARGET_VARIANT_ID = 51139451552036  # Size 9 / Black
 TARGET_SIZE = "9"
 CHECK_INTERVAL_SECONDS = 60
 HEARTBEAT_INTERVAL_HOURS = 48
-
-# Twilio credentials
-TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
-TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
-WHATSAPP_TO = os.environ["WHATSAPP_TO"]  # Your number, e.g. +12125556789
-
-# Email credentials
-SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER = os.environ["SMTP_USER"]
-SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
-EMAIL_TO = os.environ["EMAIL_TO"]
-
-# Path to cache the Twilio Content Template SID
-CONTENT_SID_FILE = Path(__file__).parent / ".content_sid"
 
 
 def check_stock() -> dict:
@@ -62,80 +52,97 @@ def check_stock() -> dict:
     raise ValueError(f"Variant {TARGET_VARIANT_ID} (size {TARGET_SIZE}) not found")
 
 
-def get_or_create_content_template() -> str:
-    """Get or create a Twilio Content Template for WhatsApp.
-
-    WhatsApp requires template messages outside the 24-hour session window.
-    This creates a simple template with one variable and caches the SID locally.
-    """
-    if CONTENT_SID_FILE.exists():
-        sid = CONTENT_SID_FILE.read_text().strip()
-        if sid:
-            return sid
-
-    resp = requests.post(
-        "https://content.twilio.com/v1/Content",
-        auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
-        json={
-            "friendly_name": "boot_bot_hunter_alert",
-            "language": "en",
-            "variables": {"1": "message text"},
-            "types": {
-                "twilio/text": {
-                    "body": "{{1}}"
-                }
-            }
-        }
+def send_ntfy(title: str, message: str, priority: str = "default"):
+    """Send a push notification via ntfy.sh."""
+    topic = os.environ.get("NTFY_TOPIC", "hunter-boots-size9-stock")
+    requests.post(
+        f"https://ntfy.sh/{topic}",
+        data=message.encode("utf-8"),
+        headers={
+            "Title": title,
+            "Priority": priority,
+            "Tags": "boot",
+            "Click": PRODUCT_URL,
+        },
+        timeout=10,
     )
-    resp.raise_for_status()
-    sid = resp.json()["sid"]
-    CONTENT_SID_FILE.write_text(sid)
-    return sid
 
 
-def send_whatsapp(message: str, content_sid: str):
-    """Send a WhatsApp message via Twilio using a Content Template."""
-    # WhatsApp content variables cannot contain newlines or leading/trailing whitespace
-    sanitized = " | ".join(line.strip() for line in message.splitlines() if line.strip())
-    client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+def send_whatsapp(message: str):
+    """Send a WhatsApp message via Twilio sandbox."""
+    client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
     client.messages.create(
-        content_sid=content_sid,
-        content_variables=json.dumps({"1": sanitized}),
-        from_="whatsapp:+14155238886",  # Twilio sandbox number
-        to=f"whatsapp:{WHATSAPP_TO}",
+        body=message,
+        from_="whatsapp:+14155238886",
+        to=f"whatsapp:{os.environ['WHATSAPP_TO']}",
     )
 
 
 def send_email(subject: str, body: str):
     """Send an email via SMTP."""
     msg = EmailMessage()
-    msg["From"] = SMTP_USER
-    msg["To"] = EMAIL_TO
+    msg["From"] = os.environ["SMTP_USER"]
+    msg["To"] = os.environ["EMAIL_TO"]
     msg["Subject"] = subject
     msg.set_content(body)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+    host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    with smtplib.SMTP(host, port) as server:
         server.starttls()
-        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
         server.send_message(msg)
 
 
-def notify(subject: str, body: str, content_sid: str):
-    """Send notification via both WhatsApp and email. Log errors but don't crash."""
-    for name, fn in [("WhatsApp", lambda: send_whatsapp(body, content_sid)),
-                     ("Email", lambda: send_email(subject, body))]:
+def build_channels(args):
+    """Build list of enabled notification channels."""
+    channels = []
+    if args.ntfy:
+        channels.append(("ntfy", None))
+    if args.email:
+        channels.append(("Email", None))
+    if args.whatsapp:
+        channels.append(("WhatsApp", None))
+    return channels
+
+
+def notify(subject: str, body: str, enabled_channels: list, priority: str = "default"):
+    """Send notification via all enabled channels. Log errors but don't crash."""
+    dispatch = {
+        "ntfy": lambda: send_ntfy(subject, body, priority),
+        "Email": lambda: send_email(subject, body),
+        "WhatsApp": lambda: send_whatsapp(body),
+    }
+    for name, _ in enabled_channels:
         try:
-            fn()
+            dispatch[name]()
             print(f"    [{name}] sent")
         except Exception as e:
             print(f"    [{name}] FAILED: {e}")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Hunter Boots stock checker")
+    parser.add_argument("--ntfy", action="store_true",
+                        help="Enable ntfy.sh push notifications (set NTFY_TOPIC env var, default: hunter-boots-size9-stock)")
+    parser.add_argument("--email", action="store_true",
+                        help="Enable email notifications (requires SMTP_USER, SMTP_PASSWORD, EMAIL_TO env vars)")
+    parser.add_argument("--whatsapp", action="store_true",
+                        help="Enable WhatsApp via Twilio sandbox (requires TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, WHATSAPP_TO env vars)")
+    return parser.parse_args()
+
+
 def main():
-    # Set up WhatsApp content template
-    print("  Setting up WhatsApp content template...")
-    content_sid = get_or_create_content_template()
-    print(f"  Content template SID: {content_sid}")
+    args = parse_args()
+    channels = build_channels(args)
+
+    if not channels:
+        print("  Error: No notification channels enabled.")
+        print("  Use --ntfy, --email, and/or --whatsapp to enable channels.")
+        print("  Example: python stock_checker.py --ntfy --email")
+        sys.exit(1)
+
+    channel_names = [name for name, _ in channels]
 
     # Run initial stock check and send startup message
     host = platform.node()
@@ -155,7 +162,7 @@ def main():
         f"Check interval: {CHECK_INTERVAL_SECONDS}s\n"
         f"Heartbeat: every {HEARTBEAT_INTERVAL_HOURS}h"
     )
-    notify("Stock Checker Started", startup_msg, content_sid)
+    notify("Stock Checker Started", startup_msg, channels)
 
     print("=" * 60)
     print("  Hunter Boots Stock Checker")
@@ -164,8 +171,7 @@ def main():
     print(f"  Initial status: {initial_status}")
     print(f"  Checking every {CHECK_INTERVAL_SECONDS} seconds")
     print(f"  Heartbeat every {HEARTBEAT_INTERVAL_HOURS} hours")
-    print(f"  WhatsApp: {WHATSAPP_TO}")
-    print(f"  Email: {EMAIL_TO}")
+    print(f"  Channels: {', '.join(channel_names)}")
     print("=" * 60)
     print()
 
@@ -176,11 +182,11 @@ def main():
         check_count += 1
         now = datetime.now().strftime("%H:%M:%S")
 
-        # Send heartbeat every 48 hours to keep Twilio sandbox alive
+        # Send heartbeat to keep channels alive
         elapsed_hours = (time.monotonic() - last_heartbeat) / 3600
         if elapsed_hours >= HEARTBEAT_INTERVAL_HOURS:
             heartbeat_msg = f"Still watching size {TARGET_SIZE} — {check_count} checks so far, still sold out."
-            notify("Stock Checker Heartbeat", heartbeat_msg, content_sid)
+            notify("Stock Checker Heartbeat", heartbeat_msg, channels)
             last_heartbeat = time.monotonic()
             print(f"  [{now}] Heartbeat sent")
 
@@ -203,7 +209,7 @@ def main():
                 print("  " + "!" * 50)
                 print()
 
-                notify("HUNTER BOOTS IN STOCK!", msg, content_sid)
+                notify("HUNTER BOOTS IN STOCK!", msg, channels, priority="urgent")
                 print("  Continuing to monitor in case it sells out and restocks...")
                 print()
 
