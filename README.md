@@ -1,12 +1,13 @@
 # boot-bot-hunter
 
-Stock checker for [Hunter Boots Moon Lug Sole Snow Booties](https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01) (Size 9). Polls the Shopify product API every 60 seconds and sends a WhatsApp message via Twilio when back in stock.
+Stock checker for [Hunter Boots Moon Lug Sole Snow Booties](https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01) (Size 9). Polls the Shopify product API every 60 seconds and sends WhatsApp + email notifications when back in stock.
 
 ## Prerequisites
 
 - Python 3.9+
 - A [Twilio account](https://www.twilio.com/try-twilio) (free trial works)
 - WhatsApp on your phone
+- A Gmail account (or other SMTP provider)
 
 ## Install
 
@@ -26,7 +27,15 @@ pip install -r requirements.txt
 4. Follow the instructions to join the sandbox: send the provided code (e.g. "join <two-words>") from your WhatsApp to the Twilio sandbox number **+1 415 523 8886**
 5. Once you receive a confirmation reply, your WhatsApp is connected
 
-**Note:** The sandbox session expires after 72 hours of inactivity. If the checker stops delivering messages, re-send the join code from step 4 to reconnect.
+On first run, the script automatically creates a Twilio Content Template (required for WhatsApp messages outside the 24-hour session window) and caches the template SID locally in `.content_sid`.
+
+## Email Setup (Gmail)
+
+1. Go to [Google App Passwords](https://myaccount.google.com/apppasswords) (requires 2FA enabled)
+2. Create an app password for "Mail"
+3. Copy the 16-character password (e.g. `abcd efgh ijkl mnop`)
+
+For non-Gmail providers, set `SMTP_HOST` and `SMTP_PORT` accordingly.
 
 ## Configure
 
@@ -40,9 +49,15 @@ Edit `.env` with your values:
 TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 WHATSAPP_TO=+12125556789
+
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=you@gmail.com
+SMTP_PASSWORD=abcd efgh ijkl mnop
+EMAIL_TO=you@gmail.com
 ```
 
-`WHATSAPP_TO` is your personal phone number (the one linked to your WhatsApp).
+`WHATSAPP_TO` is your personal phone number (the one linked to your WhatsApp). `EMAIL_TO` can be any email address you want alerts sent to.
 
 ## Run
 
@@ -52,14 +67,14 @@ export $(cat .env | xargs)
 python stock_checker.py
 ```
 
-You'll receive a confirmation WhatsApp message on startup. The checker logs each poll to stdout:
+You'll receive a confirmation WhatsApp message and email on startup. The checker logs each poll to stdout:
 
 ```
   [14:32:01] Check #1: Size 9 is sold out
   [14:33:01] Check #2: Size 9 is sold out
 ```
 
-When size 9 comes back in stock, you'll get a WhatsApp message with the buy link.
+When size 9 comes back in stock, you'll get both a WhatsApp message and an email with the buy link. If one channel fails, the other still sends.
 
 ## Run on a Headless Server
 
@@ -136,6 +151,16 @@ Create `~/Library/LaunchAgents/com.bootbothunter.plist`:
         <string>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</string>
         <key>WHATSAPP_TO</key>
         <string>+12125556789</string>
+        <key>SMTP_HOST</key>
+        <string>smtp.gmail.com</string>
+        <key>SMTP_PORT</key>
+        <string>587</string>
+        <key>SMTP_USER</key>
+        <string>you@gmail.com</string>
+        <key>SMTP_PASSWORD</key>
+        <string>abcd efgh ijkl mnop</string>
+        <key>EMAIL_TO</key>
+        <string>you@gmail.com</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -149,7 +174,7 @@ Create `~/Library/LaunchAgents/com.bootbothunter.plist`:
 </plist>
 ```
 
-Replace `/Users/YOU/` with your actual home directory and fill in the Twilio values, then load it:
+Replace `/Users/YOU/` with your actual home directory and fill in your credentials, then load it:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.bootbothunter.plist

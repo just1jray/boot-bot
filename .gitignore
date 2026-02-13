@@ -1,4 +1,5 @@
 .env
+.content_sid
 venv/
 __pycache__/
 *.pyc

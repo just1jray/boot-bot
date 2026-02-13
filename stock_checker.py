@@ -2,15 +2,18 @@
 """
 Hunter Boots Stock Checker
 Monitors size 9 availability for the Moon Lug Sole Snow Booties
-and sends a WhatsApp message via Twilio when back in stock.
+and sends WhatsApp + email notifications when back in stock.
 """
 
 import json
 import os
 import platform
+import smtplib
 import sys
 import time
 from datetime import datetime
+from email.message import EmailMessage
+from pathlib import Path
 
 import requests
 from twilio.rest import Client as TwilioClient
@@ -27,6 +30,16 @@ HEARTBEAT_INTERVAL_HOURS = 48
 TWILIO_ACCOUNT_SID = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 WHATSAPP_TO = os.environ["WHATSAPP_TO"]  # Your number, e.g. +12125556789
+
+# Email credentials
+SMTP_HOST = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ["SMTP_USER"]
+SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
+EMAIL_TO = os.environ["EMAIL_TO"]
+
+# Path to cache the Twilio Content Template SID
+CONTENT_SID_FILE = Path(__file__).parent / ".content_sid"
 
 
 def check_stock() -> dict:
@@ -49,17 +62,79 @@ def check_stock() -> dict:
     raise ValueError(f"Variant {TARGET_VARIANT_ID} (size {TARGET_SIZE}) not found")
 
 
-def send_whatsapp(message: str):
-    """Send a WhatsApp message via Twilio sandbox."""
+def get_or_create_content_template() -> str:
+    """Get or create a Twilio Content Template for WhatsApp.
+
+    WhatsApp requires template messages outside the 24-hour session window.
+    This creates a simple template with one variable and caches the SID locally.
+    """
+    if CONTENT_SID_FILE.exists():
+        sid = CONTENT_SID_FILE.read_text().strip()
+        if sid:
+            return sid
+
+    resp = requests.post(
+        "https://content.twilio.com/v1/Content",
+        auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+        json={
+            "friendly_name": "boot_bot_hunter_alert",
+            "language": "en",
+            "variables": {"1": "message text"},
+            "types": {
+                "twilio/text": {
+                    "body": "{{1}}"
+                }
+            }
+        }
+    )
+    resp.raise_for_status()
+    sid = resp.json()["sid"]
+    CONTENT_SID_FILE.write_text(sid)
+    return sid
+
+
+def send_whatsapp(message: str, content_sid: str):
+    """Send a WhatsApp message via Twilio using a Content Template."""
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     client.messages.create(
-        body=message,
+        content_sid=content_sid,
+        content_variables=json.dumps({"1": message}),
         from_="whatsapp:+14155238886",  # Twilio sandbox number
         to=f"whatsapp:{WHATSAPP_TO}",
     )
 
 
+def send_email(subject: str, body: str):
+    """Send an email via SMTP."""
+    msg = EmailMessage()
+    msg["From"] = SMTP_USER
+    msg["To"] = EMAIL_TO
+    msg["Subject"] = subject
+    msg.set_content(body)
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASSWORD)
+        server.send_message(msg)
+
+
+def notify(subject: str, body: str, content_sid: str):
+    """Send notification via both WhatsApp and email. Log errors but don't crash."""
+    for name, fn in [("WhatsApp", lambda: send_whatsapp(body, content_sid)),
+                     ("Email", lambda: send_email(subject, body))]:
+        try:
+            fn()
+            print(f"    [{name}] sent")
+        except Exception as e:
+            print(f"    [{name}] FAILED: {e}")
+
+
 def main():
+    # Set up WhatsApp content template
+    print("  Setting up WhatsApp content template...")
+    content_sid = get_or_create_content_template()
+    print(f"  Content template SID: {content_sid}")
+
     # Run initial stock check and send startup message
     host = platform.node()
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -78,7 +153,7 @@ def main():
         f"Check interval: {CHECK_INTERVAL_SECONDS}s\n"
         f"Heartbeat: every {HEARTBEAT_INTERVAL_HOURS}h"
     )
-    send_whatsapp(startup_msg)
+    notify("Stock Checker Started", startup_msg, content_sid)
 
     print("=" * 60)
     print("  Hunter Boots Stock Checker")
@@ -87,10 +162,9 @@ def main():
     print(f"  Initial status: {initial_status}")
     print(f"  Checking every {CHECK_INTERVAL_SECONDS} seconds")
     print(f"  Heartbeat every {HEARTBEAT_INTERVAL_HOURS} hours")
-    print(f"  WhatsApp notifications to: {WHATSAPP_TO}")
+    print(f"  WhatsApp: {WHATSAPP_TO}")
+    print(f"  Email: {EMAIL_TO}")
     print("=" * 60)
-    print()
-    print("  Startup WhatsApp message sent successfully.")
     print()
 
     check_count = 0
@@ -103,7 +177,8 @@ def main():
         # Send heartbeat every 48 hours to keep Twilio sandbox alive
         elapsed_hours = (time.monotonic() - last_heartbeat) / 3600
         if elapsed_hours >= HEARTBEAT_INTERVAL_HOURS:
-            send_whatsapp(f"Still watching size {TARGET_SIZE} — {check_count} checks so far, still sold out.")
+            heartbeat_msg = f"Still watching size {TARGET_SIZE} — {check_count} checks so far, still sold out."
+            notify("Stock Checker Heartbeat", heartbeat_msg, content_sid)
             last_heartbeat = time.monotonic()
             print(f"  [{now}] Heartbeat sent")
 
@@ -126,8 +201,7 @@ def main():
                 print("  " + "!" * 50)
                 print()
 
-                send_whatsapp(msg)
-                print("  WhatsApp message sent!")
+                notify("HUNTER BOOTS IN STOCK!", msg, content_sid)
                 print("  Continuing to monitor in case it sells out and restocks...")
                 print()
 
