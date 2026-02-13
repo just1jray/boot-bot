@@ -95,10 +95,12 @@ def get_or_create_content_template() -> str:
 
 def send_whatsapp(message: str, content_sid: str):
     """Send a WhatsApp message via Twilio using a Content Template."""
+    # WhatsApp content variables cannot contain newlines or leading/trailing whitespace
+    sanitized = " | ".join(line.strip() for line in message.splitlines() if line.strip())
     client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     client.messages.create(
         content_sid=content_sid,
-        content_variables=json.dumps({"1": message}),
+        content_variables=json.dumps({"1": sanitized}),
         from_="whatsapp:+14155238886",  # Twilio sandbox number
         to=f"whatsapp:{WHATSAPP_TO}",
     )
