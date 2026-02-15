@@ -30,17 +30,21 @@ See `products.json.example` for the format:
 [
   {
     "url": "https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01",
-    "size": "9"
+    "size": "9",
+    "interval": 60
   },
   {
-    "url": "https://example.com/products/rain-jacket",
-    "size": "M"
+    "url": "https://shop-usa.palaceskateboards.com/products/2xfzwa123s9w",
+    "size": "XL",
+    "interval": 30
   },
   {
     "url": "https://example.com/products/tote-bag"
   }
 ]
 ```
+
+Each product can have its own `interval` (in seconds). Products without an `interval` use the `--interval` default (60s).
 
 ### Custom intervals
 
@@ -53,7 +57,7 @@ python stock_checker.py --url <url> --size M --interval 30 --heartbeat 24 --ntfy
 | `--url` | — | Shopify product URL (required unless `--config`) |
 | `--config` | — | JSON config file with multiple products (required unless `--url`) |
 | `--size` | — | Variant size to watch (e.g. `9`, `M`, `XL`). Omit for single-variant products |
-| `--interval` | `60` | Check interval in seconds |
+| `--interval` | `60` | Default check interval in seconds (can be overridden per-product in config) |
 | `--heartbeat` | `48` | Heartbeat interval in hours |
 
 ## Notification Channels

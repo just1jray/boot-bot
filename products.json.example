@@ -1,11 +1,13 @@
 [
   {
     "url": "https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01",
-    "size": "9"
+    "size": "9",
+    "interval": 60
   },
   {
-    "url": "https://example.com/products/rain-jacket",
-    "size": "M"
+    "url": "https://shop-usa.palaceskateboards.com/products/2xfzwa123s9w",
+    "size": "XL",
+    "interval": 30
   },
   {
     "url": "https://example.com/products/tote-bag"

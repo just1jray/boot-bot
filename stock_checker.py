@@ -23,13 +23,113 @@ from email.message import EmailMessage
 import requests
 from twilio.rest import Client as TwilioClient
 
+# Common size abbreviation mappings (both directions)
+SIZE_ALIASES = {
+    "xs": ["x-small", "xsmall", "extra small", "extra-small"],
+    "s": ["small"],
+    "m": ["medium", "med"],
+    "l": ["large"],
+    "xl": ["x-large", "xlarge", "extra large", "extra-large"],
+    "xxl": ["xx-large", "xxlarge", "2x-large", "2xlarge", "2xl"],
+    "xxxl": ["xxx-large", "xxxlarge", "3x-large", "3xlarge", "3xl"],
+}
+# Build reverse map: "x-large" -> "xl", "small" -> "s", etc.
+_SIZE_NORMALIZE = {}
+for abbrev, expansions in SIZE_ALIASES.items():
+    _SIZE_NORMALIZE[abbrev] = abbrev
+    for exp in expansions:
+        _SIZE_NORMALIZE[exp] = abbrev
+
+
+def _normalize_size(s):
+    """Normalize a size string for comparison. 'X-Large' -> 'xl', '9' -> '9'."""
+    return _SIZE_NORMALIZE.get(s.lower().strip(), s.lower().strip())
+
+
+_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+
+def _fetch_product_json(url):
+    """Fetch Shopify product JSON from a product URL.
+
+    Tries the standard .js endpoint first. If it hits a redirect loop
+    (common with headless Hydrogen/Oxygen stores), discovers the underlying
+    .myshopify.com domain and retries there.
+    """
+    js_url = url.rstrip("/") + ".js"
+    try:
+        resp = requests.get(js_url, timeout=15, headers={"User-Agent": _UA})
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.TooManyRedirects:
+        pass  # Headless store — fall through to myshopify discovery
+
+    # Headless Shopify (Hydrogen/Oxygen): the custom domain redirects endlessly.
+    # Probe the custom domain with redirects disabled to find the .myshopify.com
+    # domain from the redirect chain.
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname
+    path = urlparse(url).path
+
+    # First, get the initial redirect to discover the shop
+    probe = requests.get(
+        f"https://{host}/", timeout=15,
+        headers={"User-Agent": _UA}, allow_redirects=False,
+    )
+    # Shopify sets x-shopid; look for a myshopify.com redirect from the original domain
+    # Try palace-skateboards.myshopify.com pattern: probe known naming conventions
+    # by checking the products.json endpoint on candidate domains.
+    # The most reliable method: the .myshopify.com domain often appears as the
+    # redirect target from the original host in a 301.
+    base = host.replace("shop-usa.", "").replace("shop.", "").replace("www.", "")
+    base_name = base.split(".")[0]  # e.g. "palaceskateboards" from "palaceskateboards.com"
+
+    candidates = [
+        f"{base_name}.myshopify.com",
+        f"{base_name}-usa.myshopify.com",
+        f"{base_name}-us.myshopify.com",
+    ]
+    # Also try hyphenated version: "palaceskateboards" -> "palace-skateboards"
+    # Insert hyphens before common suffixes
+    for suffix in ["skateboards", "boards", "shop", "store", "usa", "boots"]:
+        if suffix in base_name and base_name != suffix:
+            hyphenated = base_name.replace(suffix, f"-{suffix}").strip("-")
+            candidates.append(f"{hyphenated}.myshopify.com")
+            candidates.append(f"{hyphenated}-usa.myshopify.com")
+            candidates.append(f"{hyphenated}-us.myshopify.com")
+
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    candidates = unique
+
+    for domain in candidates:
+        try:
+            js_url = f"https://{domain}{path}.js"
+            resp = requests.get(js_url, timeout=10, headers={"User-Agent": _UA})
+            if resp.status_code == 200:
+                return resp.json()
+        except requests.RequestException:
+            continue
+
+    raise requests.exceptions.ConnectionError(
+        f"Could not fetch product data from {url}. "
+        f"If this is a headless Shopify store, try the .myshopify.com URL instead."
+    )
+
 
 def resolve_variant(url, size=None):
     """Fetch product JSON and find the matching variant.
 
     Args:
         url: Shopify product URL (e.g. https://store.com/products/some-item)
-        size: Optional size to match (e.g. "9", "M"). If None, uses first variant.
+        size: Optional size to match (e.g. "9", "M", "XL"). If None, uses first variant.
+              Matches against the size portion of the variant title (before " / ").
+              Handles common abbreviations (XL matches X-Large, S matches Small, etc.)
 
     Returns:
         dict with variant_id, variant_title, price, product_title, product_url
@@ -37,12 +137,7 @@ def resolve_variant(url, size=None):
     Raises:
         ValueError: if size is specified but not found among variants
     """
-    js_url = url.rstrip("/") + ".js"
-    resp = requests.get(js_url, timeout=15, headers={
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    })
-    resp.raise_for_status()
-    data = resp.json()
+    data = _fetch_product_json(url)
 
     variants = data.get("variants", [])
     if not variants:
@@ -53,12 +148,13 @@ def resolve_variant(url, size=None):
     else:
         variant = None
         available_sizes = []
+        target = _normalize_size(size)
         for v in variants:
             title = v.get("title", "")
-            # Shopify titles: "9 / Black", "M / Blue", "Default Title"
+            # Shopify titles: "9 / Black", "M / Blue", "Small", "Default Title"
             size_part = title.split(" / ")[0].strip()
             available_sizes.append(size_part)
-            if size_part.lower() == size.lower():
+            if _normalize_size(size_part) == target:
                 variant = v
                 break
 
@@ -106,12 +202,7 @@ def check_stock(product):
     Returns:
         dict with 'available', 'title', 'price', 'product_title'
     """
-    js_url = product["url"].rstrip("/") + ".js"
-    resp = requests.get(js_url, timeout=15, headers={
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    })
-    resp.raise_for_status()
-    data = resp.json()
+    data = _fetch_product_json(product["product_url"])
 
     for variant in data.get("variants", []):
         if variant["id"] == product["variant_id"]:
@@ -251,22 +342,24 @@ def main():
     product_specs = load_products(args)
 
     # Resolve variants for all products at startup (fail fast)
+    default_interval = args.interval
     print("Resolving products...")
     products = []
     for spec in product_specs:
         url = spec["url"]
         size = spec.get("size")
+        interval = spec.get("interval", default_interval)
         try:
             resolved = resolve_variant(url, size)
+            resolved["interval"] = interval
             products.append(resolved)
             label = format_label(resolved)
-            print(f"  OK: {label} — ${resolved['price']:.0f}")
+            print(f"  OK: {label} — ${resolved['price']:.0f} (every {interval}s)")
         except (requests.RequestException, ValueError) as e:
             print(f"  FAILED: {url} (size={size}) — {e}")
             sys.exit(1)
     print()
 
-    check_interval = args.interval
     heartbeat_hours = args.heartbeat
 
     # Initial stock check
@@ -282,11 +375,12 @@ def main():
             status = f"unknown ({e})"
         status_lines.append(f"  {format_label(p)}: {status}")
 
-    product_summary = "\n".join(f"  - {format_label(p)}" for p in products)
+    product_summary = "\n".join(
+        f"  - {format_label(p)} (every {p['interval']}s)" for p in products
+    )
     startup_msg = (
         f"Stock checker started on {host} at {started_at}\n"
         f"Monitoring {len(products)} product(s):\n{product_summary}\n"
-        f"Check interval: {check_interval}s\n"
         f"Heartbeat: every {heartbeat_hours}h"
     )
     notify("Stock Checker Started", startup_msg, channels)
@@ -297,7 +391,6 @@ def main():
     print(f"  Monitoring {len(products)} product(s):")
     for line in status_lines:
         print(line)
-    print(f"  Checking every {check_interval} seconds")
     print(f"  Heartbeat every {heartbeat_hours} hours")
     print(f"  Channels: {', '.join(channels)}")
     print("=" * 60)
@@ -305,24 +398,35 @@ def main():
 
     check_count = 0
     last_heartbeat = time.monotonic()
+    # Track when each product was last checked (0 = check immediately)
+    last_checked = {id(p): 0.0 for p in products}
 
     while True:
-        check_count += 1
+        now_mono = time.monotonic()
         now = datetime.now().strftime("%H:%M:%S")
 
         # Heartbeat
-        elapsed_hours = (time.monotonic() - last_heartbeat) / 3600
+        elapsed_hours = (now_mono - last_heartbeat) / 3600
         if elapsed_hours >= heartbeat_hours:
             heartbeat_msg = (
                 f"Still watching {len(products)} product(s) — "
                 f"{check_count} checks so far, nothing in stock."
             )
             notify("Stock Checker Heartbeat", heartbeat_msg, channels)
-            last_heartbeat = time.monotonic()
+            last_heartbeat = now_mono
             print(f"  [{now}] Heartbeat sent")
 
+        # Check products whose interval has elapsed
         found_stock = False
+        checked_any = False
         for p in products:
+            elapsed = now_mono - last_checked[id(p)]
+            if elapsed < p["interval"]:
+                continue
+
+            checked_any = True
+            check_count += 1
+            last_checked[id(p)] = now_mono
             label = format_label(p)
             try:
                 info = check_stock(p)
@@ -349,6 +453,8 @@ def main():
                         priority="urgent",
                         click_url=p["product_url"],
                     )
+                    # Push next check out 5 minutes to avoid spamming
+                    last_checked[id(p)] = now_mono + 300 - p["interval"]
 
             except requests.RequestException as e:
                 print(f"  [{now}] Check #{check_count}: {label} — Network error: {e}")
@@ -358,9 +464,14 @@ def main():
         if found_stock:
             print("  Continuing to monitor in case it sells out and restocks...")
             print()
-            time.sleep(300)
-        else:
-            time.sleep(check_interval)
+
+        # Sleep until the next product is due
+        next_due = min(
+            p["interval"] - (time.monotonic() - last_checked[id(p)])
+            for p in products
+        )
+        if next_due > 0:
+            time.sleep(next_due)
 
 
 if __name__ == "__main__":
