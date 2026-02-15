@@ -1,4 +1,4 @@
-# boot-bot-hunter
+# boot-bot
 
 Shopify stock checker. Monitors any product for restocks — boots with numeric sizes, clothing with letter sizes (S/M/L/XL), or single-variant products like bags and accessories. Polls the Shopify product API and sends notifications when items come back in stock.
 
