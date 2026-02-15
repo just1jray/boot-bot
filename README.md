@@ -1,6 +1,60 @@
 # boot-bot-hunter
 
-Stock checker for [Hunter Boots Moon Lug Sole Snow Booties](https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01) (Size 9). Polls the Shopify product API every 60 seconds and sends notifications when back in stock.
+Shopify stock checker. Monitors any product for restocks — boots with numeric sizes, clothing with letter sizes (S/M/L/XL), or single-variant products like bags and accessories. Polls the Shopify product API and sends notifications when items come back in stock.
+
+## Usage
+
+### Single product with a size
+
+```bash
+python stock_checker.py --url "https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01" --size 9 --ntfy
+```
+
+### Single product without a size (bags, accessories, one-size items)
+
+```bash
+python stock_checker.py --url "https://example.com/products/tote-bag" --ntfy --email
+```
+
+When `--size` is omitted, the checker monitors the first variant.
+
+### Multiple products via config file
+
+```bash
+python stock_checker.py --config products.json --ntfy --email
+```
+
+See `products.json.example` for the format:
+
+```json
+[
+  {
+    "url": "https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01",
+    "size": "9"
+  },
+  {
+    "url": "https://example.com/products/rain-jacket",
+    "size": "M"
+  },
+  {
+    "url": "https://example.com/products/tote-bag"
+  }
+]
+```
+
+### Custom intervals
+
+```bash
+python stock_checker.py --url <url> --size M --interval 30 --heartbeat 24 --ntfy
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--url` | — | Shopify product URL (required unless `--config`) |
+| `--config` | — | JSON config file with multiple products (required unless `--url`) |
+| `--size` | — | Variant size to watch (e.g. `9`, `M`, `XL`). Omit for single-variant products |
+| `--interval` | `60` | Check interval in seconds |
+| `--heartbeat` | `48` | Heartbeat interval in hours |
 
 ## Notification Channels
 
@@ -29,7 +83,7 @@ pip install -r requirements.txt
 ### ntfy (instant push notifications)
 
 1. Install the **ntfy** app on your phone — [iOS](https://apps.apple.com/us/app/ntfy/id1625396347) / [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy)
-2. Open the app, tap **+**, subscribe to topic: `hunter-boots-size9-stock`
+2. Open the app, tap **+**, subscribe to your topic (e.g. `shopify-stock-checker`)
 3. Done — no account needed
 
 To use a custom topic, set `NTFY_TOPIC` in your `.env`.
@@ -64,16 +118,20 @@ Edit `.env` with values for the channels you plan to enable.
 ```bash
 source venv/bin/activate
 export $(cat .env | xargs)
-python stock_checker.py --ntfy --email
+python stock_checker.py --url <shopify-product-url> --size 9 --ntfy --email
 ```
 
 Pick any combination of flags:
 
 ```bash
-python stock_checker.py --ntfy                    # ntfy only
-python stock_checker.py --email                   # email only
-python stock_checker.py --ntfy --email            # ntfy + email
-python stock_checker.py --ntfy --email --whatsapp # all three
+# Single product, ntfy only
+python stock_checker.py --url <url> --size 9 --ntfy
+
+# Multiple products from config
+python stock_checker.py --config products.json --ntfy --email
+
+# All channels
+python stock_checker.py --url <url> --ntfy --email --whatsapp
 ```
 
 ## Run on a Headless Server
@@ -83,7 +141,7 @@ python stock_checker.py --ntfy --email --whatsapp # all three
 ```bash
 source venv/bin/activate
 export $(cat .env | xargs)
-nohup python stock_checker.py --ntfy --email >> stock_check.log 2>&1 &
+nohup python stock_checker.py --url <url> --size 9 --ntfy --email >> stock_check.log 2>&1 &
 echo $! > checker.pid
 ```
 
@@ -97,7 +155,7 @@ Create `/etc/systemd/system/boot-bot-hunter.service`:
 
 ```ini
 [Unit]
-Description=Hunter Boots Stock Checker
+Description=Shopify Stock Checker
 After=network-online.target
 Wants=network-online.target
 
@@ -106,7 +164,7 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/boot-bot-hunter
 EnvironmentFile=/home/pi/boot-bot-hunter/.env
-ExecStart=/home/pi/boot-bot-hunter/venv/bin/python stock_checker.py --ntfy --email
+ExecStart=/home/pi/boot-bot-hunter/venv/bin/python stock_checker.py --config products.json --ntfy --email
 Restart=on-failure
 RestartSec=30
 
@@ -142,13 +200,15 @@ Create `~/Library/LaunchAgents/com.bootbothunter.plist`:
     <array>
         <string>/Users/YOU/boot-bot-hunter/venv/bin/python</string>
         <string>stock_checker.py</string>
+        <string>--config</string>
+        <string>products.json</string>
         <string>--ntfy</string>
         <string>--email</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>NTFY_TOPIC</key>
-        <string>hunter-boots-size9-stock</string>
+        <string>shopify-stock-checker</string>
         <key>SMTP_HOST</key>
         <string>smtp.gmail.com</string>
         <key>SMTP_PORT</key>

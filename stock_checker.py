@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Hunter Boots Stock Checker
-Monitors size 9 availability for the Moon Lug Sole Snow Booties
-and sends notifications when back in stock.
+Shopify Stock Checker
+Monitors product availability on any Shopify store and sends
+notifications when items come back in stock.
 
 Enable channels with env vars or CLI flags:
   --ntfy       Enable ntfy.sh push notifications
@@ -23,25 +23,98 @@ from email.message import EmailMessage
 import requests
 from twilio.rest import Client as TwilioClient
 
-# --- Configuration (set via environment variables) ---
-PRODUCT_URL = "https://hunterboots.com/products/womens-moon-lug-sole-insulated-waterproof-snow-booties-in-black-w-moon-blk01"
-PRODUCT_JS_URL = f"{PRODUCT_URL}.js"
-TARGET_VARIANT_ID = 51139451552036  # Size 9 / Black
-TARGET_SIZE = "9"
-CHECK_INTERVAL_SECONDS = 60
-HEARTBEAT_INTERVAL_HOURS = 48
+
+def resolve_variant(url, size=None):
+    """Fetch product JSON and find the matching variant.
+
+    Args:
+        url: Shopify product URL (e.g. https://store.com/products/some-item)
+        size: Optional size to match (e.g. "9", "M"). If None, uses first variant.
+
+    Returns:
+        dict with variant_id, variant_title, price, product_title, product_url
+
+    Raises:
+        ValueError: if size is specified but not found among variants
+    """
+    js_url = url.rstrip("/") + ".js"
+    resp = requests.get(js_url, timeout=15, headers={
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    })
+    resp.raise_for_status()
+    data = resp.json()
+
+    variants = data.get("variants", [])
+    if not variants:
+        raise ValueError(f"No variants found for {url}")
+
+    if size is None:
+        variant = variants[0]
+    else:
+        variant = None
+        available_sizes = []
+        for v in variants:
+            title = v.get("title", "")
+            # Shopify titles: "9 / Black", "M / Blue", "Default Title"
+            size_part = title.split(" / ")[0].strip()
+            available_sizes.append(size_part)
+            if size_part.lower() == size.lower():
+                variant = v
+                break
+
+        if variant is None:
+            raise ValueError(
+                f"Size '{size}' not found for {data.get('title', url)}. "
+                f"Available sizes: {', '.join(available_sizes)}"
+            )
+
+    return {
+        "variant_id": variant["id"],
+        "variant_title": variant.get("title", ""),
+        "price": variant.get("price", 0) / 100,
+        "product_title": data.get("title", ""),
+        "product_url": url,
+    }
 
 
-def check_stock() -> dict:
-    """Check stock status for size 9 variant."""
-    resp = requests.get(PRODUCT_JS_URL, timeout=15, headers={
+def load_products(args):
+    """Build list of product dicts from CLI args or config file.
+
+    Returns:
+        list of dicts, each with 'url' and optional 'size'
+    """
+    if args.config:
+        with open(args.config) as f:
+            products = json.load(f)
+        if not isinstance(products, list) or not products:
+            print("Error: Config file must contain a non-empty JSON array.")
+            sys.exit(1)
+        return products
+    else:
+        product = {"url": args.url}
+        if args.size:
+            product["size"] = args.size
+        return [product]
+
+
+def check_stock(product):
+    """Check stock status for a resolved product's variant.
+
+    Args:
+        product: dict with at least 'url' and 'variant_id' keys
+
+    Returns:
+        dict with 'available', 'title', 'price', 'product_title'
+    """
+    js_url = product["url"].rstrip("/") + ".js"
+    resp = requests.get(js_url, timeout=15, headers={
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     })
     resp.raise_for_status()
     data = resp.json()
 
     for variant in data.get("variants", []):
-        if variant["id"] == TARGET_VARIANT_ID:
+        if variant["id"] == product["variant_id"]:
             return {
                 "available": variant.get("available", False),
                 "title": variant.get("title", ""),
@@ -49,26 +122,30 @@ def check_stock() -> dict:
                 "product_title": data.get("title", ""),
             }
 
-    raise ValueError(f"Variant {TARGET_VARIANT_ID} (size {TARGET_SIZE}) not found")
+    raise ValueError(
+        f"Variant {product['variant_id']} no longer found for {product['product_title']}"
+    )
 
 
-def send_ntfy(title: str, message: str, priority: str = "default"):
+def send_ntfy(title, message, priority="default", click_url=None):
     """Send a push notification via ntfy.sh."""
-    topic = os.environ.get("NTFY_TOPIC", "hunter-boots-size9-stock")
+    topic = os.environ.get("NTFY_TOPIC", "shopify-stock-checker")
+    headers = {
+        "Title": title,
+        "Priority": priority,
+        "Tags": "shopping",
+    }
+    if click_url:
+        headers["Click"] = click_url
     requests.post(
         f"https://ntfy.sh/{topic}",
         data=message.encode("utf-8"),
-        headers={
-            "Title": title,
-            "Priority": priority,
-            "Tags": "boot",
-            "Click": PRODUCT_URL,
-        },
+        headers=headers,
         timeout=10,
     )
 
 
-def send_whatsapp(message: str):
+def send_whatsapp(message):
     """Send a WhatsApp message via Twilio sandbox."""
     client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
     client.messages.create(
@@ -78,7 +155,7 @@ def send_whatsapp(message: str):
     )
 
 
-def send_email(subject: str, body: str):
+def send_email(subject, body):
     """Send an email via SMTP."""
     msg = EmailMessage()
     msg["From"] = os.environ["SMTP_USER"]
@@ -98,22 +175,22 @@ def build_channels(args):
     """Build list of enabled notification channels."""
     channels = []
     if args.ntfy:
-        channels.append(("ntfy", None))
+        channels.append("ntfy")
     if args.email:
-        channels.append(("Email", None))
+        channels.append("Email")
     if args.whatsapp:
-        channels.append(("WhatsApp", None))
+        channels.append("WhatsApp")
     return channels
 
 
-def notify(subject: str, body: str, enabled_channels: list, priority: str = "default"):
+def notify(subject, body, channels, priority="default", click_url=None):
     """Send notification via all enabled channels. Log errors but don't crash."""
     dispatch = {
-        "ntfy": lambda: send_ntfy(subject, body, priority),
+        "ntfy": lambda: send_ntfy(subject, body, priority, click_url),
         "Email": lambda: send_email(subject, body),
         "WhatsApp": lambda: send_whatsapp(body),
     }
-    for name, _ in enabled_channels:
+    for name in channels:
         try:
             dispatch[name]()
             print(f"    [{name}] sent")
@@ -122,14 +199,42 @@ def notify(subject: str, body: str, enabled_channels: list, priority: str = "def
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Hunter Boots stock checker")
+    parser = argparse.ArgumentParser(
+        description="Shopify stock checker — monitor any product for restocks"
+    )
+
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--url", help="Shopify product URL to monitor")
+    source.add_argument("--config", help="JSON config file with multiple products")
+
+    parser.add_argument("--size",
+                        help="Variant size to watch (e.g. 9, M, XL). Omit for single-variant products.")
+    parser.add_argument("--interval", type=int, default=60,
+                        help="Check interval in seconds (default: 60)")
+    parser.add_argument("--heartbeat", type=int, default=48,
+                        help="Heartbeat interval in hours (default: 48)")
     parser.add_argument("--ntfy", action="store_true",
-                        help="Enable ntfy.sh push notifications (set NTFY_TOPIC env var, default: hunter-boots-size9-stock)")
+                        help="Enable ntfy.sh push notifications (set NTFY_TOPIC env var)")
     parser.add_argument("--email", action="store_true",
-                        help="Enable email notifications (requires SMTP_USER, SMTP_PASSWORD, EMAIL_TO env vars)")
+                        help="Enable email notifications (requires SMTP_USER, SMTP_PASSWORD, EMAIL_TO)")
     parser.add_argument("--whatsapp", action="store_true",
-                        help="Enable WhatsApp via Twilio sandbox (requires TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, WHATSAPP_TO env vars)")
-    return parser.parse_args()
+                        help="Enable WhatsApp via Twilio sandbox")
+
+    args = parser.parse_args()
+
+    if args.size and args.config:
+        parser.error("--size cannot be used with --config (set size per-product in the config file)")
+
+    return args
+
+
+def format_label(product):
+    """Short label for a resolved product: 'Product Name (Size X)' or 'Product Name'."""
+    title = product["product_title"]
+    vt = product["variant_title"]
+    if vt and vt != "Default Title":
+        return f"{title} ({vt})"
+    return title
 
 
 def main():
@@ -137,41 +242,64 @@ def main():
     channels = build_channels(args)
 
     if not channels:
-        print("  Error: No notification channels enabled.")
-        print("  Use --ntfy, --email, and/or --whatsapp to enable channels.")
-        print("  Example: python stock_checker.py --ntfy --email")
+        print("Error: No notification channels enabled.")
+        print("Use --ntfy, --email, and/or --whatsapp to enable channels.")
+        print("Example: python stock_checker.py --url <url> --ntfy")
         sys.exit(1)
 
-    channel_names = [name for name, _ in channels]
+    # Load product specs from CLI or config
+    product_specs = load_products(args)
 
-    # Run initial stock check and send startup message
+    # Resolve variants for all products at startup (fail fast)
+    print("Resolving products...")
+    products = []
+    for spec in product_specs:
+        url = spec["url"]
+        size = spec.get("size")
+        try:
+            resolved = resolve_variant(url, size)
+            products.append(resolved)
+            label = format_label(resolved)
+            print(f"  OK: {label} — ${resolved['price']:.0f}")
+        except (requests.RequestException, ValueError) as e:
+            print(f"  FAILED: {url} (size={size}) — {e}")
+            sys.exit(1)
+    print()
+
+    check_interval = args.interval
+    heartbeat_hours = args.heartbeat
+
+    # Initial stock check
     host = platform.node()
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    try:
-        info = check_stock()
-        initial_status = "IN STOCK" if info["available"] else "sold out"
-    except Exception as e:
-        initial_status = f"unknown ({e})"
+    status_lines = []
+    for p in products:
+        try:
+            info = check_stock(p)
+            status = "IN STOCK" if info["available"] else "sold out"
+        except Exception as e:
+            status = f"unknown ({e})"
+        status_lines.append(f"  {format_label(p)}: {status}")
 
+    product_summary = "\n".join(f"  - {format_label(p)}" for p in products)
     startup_msg = (
         f"Stock checker started on {host} at {started_at}\n"
-        f"Product: Moon Lug Sole Snow Booties\n"
-        f"Size: {TARGET_SIZE}\n"
-        f"Current status: {initial_status}\n"
-        f"Check interval: {CHECK_INTERVAL_SECONDS}s\n"
-        f"Heartbeat: every {HEARTBEAT_INTERVAL_HOURS}h"
+        f"Monitoring {len(products)} product(s):\n{product_summary}\n"
+        f"Check interval: {check_interval}s\n"
+        f"Heartbeat: every {heartbeat_hours}h"
     )
     notify("Stock Checker Started", startup_msg, channels)
 
     print("=" * 60)
-    print("  Hunter Boots Stock Checker")
+    print("  Shopify Stock Checker")
     print(f"  Host: {host}")
-    print(f"  Product: Moon Lug Sole Snow Booties (Size {TARGET_SIZE})")
-    print(f"  Initial status: {initial_status}")
-    print(f"  Checking every {CHECK_INTERVAL_SECONDS} seconds")
-    print(f"  Heartbeat every {HEARTBEAT_INTERVAL_HOURS} hours")
-    print(f"  Channels: {', '.join(channel_names)}")
+    print(f"  Monitoring {len(products)} product(s):")
+    for line in status_lines:
+        print(line)
+    print(f"  Checking every {check_interval} seconds")
+    print(f"  Heartbeat every {heartbeat_hours} hours")
+    print(f"  Channels: {', '.join(channels)}")
     print("=" * 60)
     print()
 
@@ -182,47 +310,57 @@ def main():
         check_count += 1
         now = datetime.now().strftime("%H:%M:%S")
 
-        # Send heartbeat to keep channels alive
+        # Heartbeat
         elapsed_hours = (time.monotonic() - last_heartbeat) / 3600
-        if elapsed_hours >= HEARTBEAT_INTERVAL_HOURS:
-            heartbeat_msg = f"Still watching size {TARGET_SIZE} — {check_count} checks so far, still sold out."
+        if elapsed_hours >= heartbeat_hours:
+            heartbeat_msg = (
+                f"Still watching {len(products)} product(s) — "
+                f"{check_count} checks so far, nothing in stock."
+            )
             notify("Stock Checker Heartbeat", heartbeat_msg, channels)
             last_heartbeat = time.monotonic()
             print(f"  [{now}] Heartbeat sent")
 
-        try:
-            info = check_stock()
-            available = info["available"]
-            status = "IN STOCK" if available else "sold out"
+        found_stock = False
+        for p in products:
+            label = format_label(p)
+            try:
+                info = check_stock(p)
+                available = info["available"]
+                status = "IN STOCK" if available else "sold out"
 
-            print(f"  [{now}] Check #{check_count}: Size {TARGET_SIZE} is {status}")
+                print(f"  [{now}] Check #{check_count}: {label} — {status}")
 
-            if available:
-                msg = (
-                    f"Size {TARGET_SIZE} Hunter Boots IN STOCK! "
-                    f"${info['price']:.0f} - Buy now: {PRODUCT_URL}"
-                )
+                if available:
+                    found_stock = True
+                    msg = (
+                        f"{label} IN STOCK! "
+                        f"${info['price']:.0f} — Buy now: {p['product_url']}"
+                    )
+                    print()
+                    print("  " + "!" * 50)
+                    print(f"  !!! {label} IS BACK IN STOCK !!!")
+                    print("  " + "!" * 50)
+                    print()
+                    notify(
+                        f"IN STOCK: {label}",
+                        msg,
+                        channels,
+                        priority="urgent",
+                        click_url=p["product_url"],
+                    )
 
-                print()
-                print("  " + "!" * 50)
-                print(f"  !!! SIZE {TARGET_SIZE} IS BACK IN STOCK !!!")
-                print("  " + "!" * 50)
-                print()
+            except requests.RequestException as e:
+                print(f"  [{now}] Check #{check_count}: {label} — Network error: {e}")
+            except (ValueError, KeyError, json.JSONDecodeError) as e:
+                print(f"  [{now}] Check #{check_count}: {label} — Parse error: {e}")
 
-                notify("HUNTER BOOTS IN STOCK!", msg, channels, priority="urgent")
-                print("  Continuing to monitor in case it sells out and restocks...")
-                print()
-
-                # Wait 5 minutes after finding stock to avoid spamming
-                time.sleep(300)
-                continue
-
-        except requests.RequestException as e:
-            print(f"  [{now}] Check #{check_count}: Network error - {e}")
-        except (ValueError, KeyError, json.JSONDecodeError) as e:
-            print(f"  [{now}] Check #{check_count}: Parse error - {e}")
-
-        time.sleep(CHECK_INTERVAL_SECONDS)
+        if found_stock:
+            print("  Continuing to monitor in case it sells out and restocks...")
+            print()
+            time.sleep(300)
+        else:
+            time.sleep(check_interval)
 
 
 if __name__ == "__main__":

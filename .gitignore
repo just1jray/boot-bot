@@ -3,3 +3,5 @@ venv/
 __pycache__/
 *.pyc
 stock_check.log
+products.json
+checker.pid
